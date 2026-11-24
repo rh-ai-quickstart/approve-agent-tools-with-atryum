@@ -25,10 +25,17 @@ model:
 # servers would need a real public URL).
 clusterDomain: ""
 
+# Opt in to an isolated, cluster-local Red Hat Connectivity Link MCP Gateway
+# (0.7.x API). Install its Operator in the release namespace first.
+mcpGateway:
+  enabled: false
+  gatewayClassName: openshift-default
+
 atryum:
   image:
     repository: validmind/atryum
-    tag: "latest"
+    # The seed Job uses the demo operator API behavior in this release.
+    tag: "0.10.0"
     pullPolicy: IfNotPresent
   logLevel: info
   # Override Atryum's public URL outright (takes precedence over clusterDomain).
@@ -66,6 +73,9 @@ demo:
   image:
     repository: validmind/atryum-finance-demo
     tag: "latest"
+    # Gateway mode defaults to the published image whose Python client the
+    # adapter was built against. Override for a compatible rebuilt demo.
+    digest: ""
     pullPolicy: Always
   route:
     enabled: true

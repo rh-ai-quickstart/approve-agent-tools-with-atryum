@@ -7,9 +7,10 @@ SHELL := /bin/bash
 CHART_DIR ?= ./chart
 RELEASE   ?= quickstart
 NAMESPACE ?= atryum-quickstart
+HELM_ARGS ?=
 
 ATRYUM_IMAGE ?= validmind/atryum
-ATRYUM_TAG   ?= latest
+ATRYUM_TAG   ?= 0.10.0
 DEMO_IMAGE   ?= validmind/atryum-finance-demo
 DEMO_TAG     ?= latest
 
@@ -90,7 +91,7 @@ install: env-verify namespace ## Install Atryum + demo and seed agents, charters
 	@$(call with_env,helm upgrade --install "$(RELEASE)" "$(CHART_DIR)" \
 		--namespace "$(NAMESPACE)" \
 		--create-namespace \
-		$(HELM_SETS))
+		$(HELM_SETS) $(HELM_ARGS))
 	@$(MAKE) wait
 	@$(MAKE) urls
 
@@ -129,7 +130,7 @@ lint: ## helm lint the chart
 template: env-check ## Render the chart locally for inspection
 	@$(call with_env,helm template "$(RELEASE)" "$(CHART_DIR)" \
 		--namespace "$(NAMESPACE)" \
-		$(HELM_SETS))
+		$(HELM_SETS) $(HELM_ARGS))
 
 ##@ Uninstall
 

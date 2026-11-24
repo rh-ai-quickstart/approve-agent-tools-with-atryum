@@ -1,52 +1,54 @@
-# This pod verifies that the configured model endpoint is reachable.
-# It runs as a Helm test (helm test <release>) AND can be used standalone
-# before deploying the full chart.
-#
-# Standalone usage (before helm install):
-#   oc run test-model-access --rm -it --restart=Never \
-#     --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
-#     -- /bin/sh -c 'curl -sf --max-time 10 \
-#       -H "Authorization: Bearer YOUR_API_KEY" \
-#       -H "Content-Type: application/json" \
-#       -d "{\"model\": \"YOUR_MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in one word.\"}], \"max_tokens\": 10}" \
-#       "YOUR_MODEL_ENDPOINT/v1/chat/completions" && echo "" && echo "SUCCESS" || echo "FAILED"'
-#
-{{- if .Values.model }}
-{{- if and .Values.model.name .Values.model.endpoint }}
+{{- if include "quickstart.modelEndpoint" . }}
 apiVersion: v1
 kind: Pod
 metadata:
-  name: "{{ .Release.Name }}-test-model-access"
+  name: {{ .Release.Name }}-test-model-access
   labels:
-    app.kubernetes.io/name: {{ .Release.Name }}
-    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- include "quickstart.labels" . | nindent 4 }}
   annotations:
-    "helm.sh/hook": test
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
   containers:
     - name: test-model
-      image: registry.access.redhat.com/ubi9/ubi-minimal:latest
-      command:
-        - /bin/sh
-        - -c
+      image: {{ .Values.configure.image }}
+      envFrom:
+        - secretRef:
+            name: {{ .Release.Name }}-llm
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+      command: ["python3", "-c"]
+      args:
         - |
-          echo "Testing model endpoint connectivity..."
-          echo "Model: {{ .Values.model.name }}"
-          echo "Endpoint: {{ .Values.model.endpoint }}"
+          import json, os, sys, urllib.error, urllib.request
 
-          curl -sf --max-time 10 \
-            -H "Authorization: Bearer {{ .Values.model.api_key }}" \
-            -H "Content-Type: application/json" \
-            -d '{"model": "{{ .Values.model.name }}", "messages": [{"role": "user", "content": "Say hello in one word."}], "max_tokens": 10}' \
-            "{{ .Values.model.endpoint }}/v1/chat/completions"
-
-          if [ $? -eq 0 ]; then
-            echo ""
-            echo "SUCCESS: Model endpoint is reachable and responding."
-          else
-            echo "FAILED: Could not reach model endpoint."
-            exit 1
-          fi
-{{- end }}
+          body = {
+              "model": os.environ["LLM_MODEL"],
+              "messages": [{"role": "user", "content": "Say hello in one word."}],
+              "max_tokens": 16,
+          }
+          request = urllib.request.Request(
+              os.environ["LLM_BASE_URL"] + "/chat/completions",
+              data=json.dumps(body).encode(),
+              headers={
+                  "Authorization": "Bearer " + os.environ["LLM_API_KEY"],
+                  "Content-Type": "application/json",
+              },
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if not json.load(response).get("choices"):
+                      sys.exit("Model endpoint returned no choices")
+                  print("Model endpoint responded successfully")
+          except urllib.error.HTTPError as error:
+              sys.exit(f"Model endpoint returned HTTP {error.code}")
+          except (urllib.error.URLError, TimeoutError, ValueError):
+              sys.exit("Model endpoint could not be reached or returned an invalid response")
 {{- end }}

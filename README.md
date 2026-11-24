@@ -14,6 +14,7 @@ Put a governance gateway between AI agents and their tools: every action is appr
 - [Deploy](#deploy)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
+  - [OpenShift MCP Gateway](#openshift-mcp-gateway)
   - [Validating the deployment](#validating-the-deployment)
   - [Walkthrough](#walkthrough)
   - [Delete](#delete)
@@ -59,11 +60,19 @@ No GPU is required — the LLM is consumed as a service (OpenAI or any OpenAI-co
 
 ### Required user permissions
 
-Any user who can:
-- create a project/namespace (or be given one)
-- deploy applications via Helm (Deployments, Services, Secrets, ConfigMaps, Jobs, PVCs, Routes)
+The default install needs access to a project and permission to manage
+Deployments, Services, Secrets, ConfigMaps, Jobs, Pods, PVCs, and Routes in
+that project. These are project-level permissions.
 
-No cluster admin access is required. (The Makefile auto-detects the cluster's apps domain via `oc get ingresses.config/cluster`, which most users can read; if not, Routes still work with auto-assigned hosts.)
+In [MCP Gateway mode](#openshift-mcp-gateway), the installer also needs permission
+to manage Gateways, HTTPRoutes, MCPGatewayExtensions, MCPServerRegistrations,
+and NetworkPolicies in the project. Coordinate with your platform administrator
+to make sure the MCP Gateway Operator is installed in the project and the
+cluster has a compatible GatewayClass and Service Mesh with EnvoyFilter support.
+
+The Makefile tries to detect the cluster's apps domain with
+`oc get ingresses.config/cluster`. If that read is unavailable, OpenShift
+assigns the Route hosts.
 
 ## Deploy
 
@@ -112,21 +121,51 @@ helm install quickstart ./chart --namespace ${PROJECT} \
 
 </details>
 
-#### Testing model access (before deploying)
+### OpenShift MCP Gateway
 
-You can verify your endpoint is reachable **before** installing the chart:
+For the gateway demo, use a dedicated OpenShift project and install the Red Hat
+Connectivity Link MCP Gateway Operator (preview channel, 0.7.x API) in that
+project with an OwnNamespace OperatorGroup. The cluster needs a GatewayClass
+managed by the OpenShift Gateway API controller and Service Mesh with EnvoyFilter
+support. See the [Red Hat installation guide](https://docs.redhat.com/en/documentation/red_hat_connectivity_link/1.4/html/install_the_mcp_gateway/mcp-gateway-install).
+
+After setting the model credential in `.env`, install in the same project:
 
 ```bash
-oc run test-model-access --rm -it --restart=Never \
-  --image=registry.access.redhat.com/ubi9/ubi-minimal:latest \
-  -- /bin/sh -c 'curl -sf --max-time 10 \
-    -H "Authorization: Bearer YOUR_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d "{\"model\": \"YOUR_MODEL_NAME\", \"messages\": [{\"role\": \"user\", \"content\": \"Say hello in one word.\"}], \"max_tokens\": 10}" \
-    "YOUR_MODEL_ENDPOINT/v1/chat/completions" && echo "" && echo "SUCCESS" || echo "FAILED"'
+NS=atryum-gateway-dev
+make install NAMESPACE="$NS" HELM_ARGS='--set mcpGateway.enabled=true --set demo.route.enabled=false'
+oc wait -n "$NS" --for=condition=Programmed gateway/quickstart-mcp --timeout=180s
+oc wait -n "$NS" --for=condition=Ready mcpgatewayextension/quickstart-mcp --timeout=180s
+oc wait -n "$NS" --for=condition=Ready mcpsr/quickstart-mcp-finance mcpsr/quickstart-mcp-gdpr --timeout=180s
+helm test quickstart -n "$NS"
 ```
 
-The same check ships as a Helm test: `helm test quickstart --namespace atryum-quickstart` (runs when `model.endpoint` is set).
+The chart provisions a ClusterIP Gateway, an `MCPGatewayExtension`, and
+registrations for Atryum's finance and GDPR endpoints. The demo sets
+`FINANCE_MCP_URL` and `GDPR_MCP_URL` to the Gateway endpoint. The default mode
+uses `ATRYUM_BASE` to build the direct MCP URLs. The adapters preserve the demo
+agent ID and the original tool name so Atryum can apply the seeded charter and
+record the decision.
+Network policies limit access to the gateway listener and the two MCP backends.
+This setup uses self-reported demo identities in a dedicated project.
+
+In separate terminals, open the dashboard and Atryum UI using port forwards:
+
+```bash
+oc port-forward -n "$NS" svc/quickstart-demos 8000:8000
+oc port-forward -n "$NS" svc/quickstart-atryum 8080:8080
+```
+
+Open `http://localhost:8000/finance` or `http://localhost:8000/gdpr`, and use
+`http://localhost:8080/ui/` to review Atryum invocations. Verify the audit entry
+contains the expected agent and tool, and that denied calls do not execute.
+
+### Testing model access
+
+After installing, run `helm test quickstart --namespace atryum-quickstart`
+with the deployed namespace. When `model.endpoint` is set, the test reads
+the model credentials from the release's Kubernetes Secret. It reports the
+endpoint response status without printing its response body or the key.
 
 ### Validating the deployment
 

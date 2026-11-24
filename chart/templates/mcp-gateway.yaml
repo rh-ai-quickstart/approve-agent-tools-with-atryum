@@ -1,0 +1,191 @@
+{{- if .Values.mcpGateway.enabled }}
+{{- if not (and .Values.demo.enabled .Values.configure.enabled) }}
+{{- fail "mcpGateway.enabled requires both demo.enabled and configure.enabled" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "quickstart.gateway" . }}-service
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" . }}-service
+    {{- include "quickstart.labels" . | nindent 4 }}
+data:
+  service: |
+    spec:
+      type: ClusterIP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "quickstart.gateway" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" . }}
+    {{- include "quickstart.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: {{ .Values.mcpGateway.gatewayClassName | quote }}
+  infrastructure:
+    parametersRef:
+      group: ""
+      kind: ConfigMap
+      name: {{ include "quickstart.gateway" . }}-service
+  listeners:
+    - name: mcp
+      protocol: HTTP
+      port: 8080
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPGatewayExtension
+metadata:
+  name: {{ include "quickstart.gateway" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" . }}
+    {{- include "quickstart.labels" . | nindent 4 }}
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: {{ include "quickstart.gateway" . }}
+    namespace: {{ .Release.Namespace }}
+    sectionName: mcp
+  publicHost: {{ include "quickstart.gatewayHost" . | quote }}
+  privateHost: {{ printf "%s:8080" (include "quickstart.gatewayHost" .) | quote }}
+  backendPingIntervalSeconds: 10
+{{- range $server := list "finance" "gdpr" }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "quickstart.gateway" $ }}-{{ $server }}
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" $ }}-{{ $server }}
+    {{- include "quickstart.labels" $ | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "quickstart.gateway" $ }}
+      sectionName: mcp
+  hostnames:
+    - {{ printf "%s-%s.%s.mcp.invalid" $.Release.Name $server $.Release.Namespace | quote }}
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /mcp/{{ $server }}
+      backendRefs:
+        - name: {{ include "quickstart.atryum" $ }}
+          port: 8081
+      timeouts:
+        request: 0s
+---
+apiVersion: mcp.kuadrant.io/v1alpha1
+kind: MCPServerRegistration
+metadata:
+  name: {{ include "quickstart.gateway" $ }}-{{ $server }}
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" $ }}-{{ $server }}
+    {{- include "quickstart.labels" $ | nindent 4 }}
+spec:
+  prefix: {{ printf "%s_" $server | quote }}
+  path: /mcp/{{ $server }}
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: {{ include "quickstart.gateway" $ }}-{{ $server }}
+    namespace: {{ $.Release.Namespace }}
+{{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "quickstart.gateway" . }}-adapter
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" . }}-adapter
+    {{- include "quickstart.labels" . | nindent 4 }}
+data:
+  gateway_client.py: |
+{{ .Files.Get "files/gateway_client.py" | indent 4 }}
+  gateway_backend.py: |
+{{ .Files.Get "files/gateway_backend.py" | indent 4 }}
+  seed.json: |
+{{ .Files.Get "files/seed.json" | indent 4 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "quickstart.gateway" . }}-atryum
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" . }}-atryum
+    {{- include "quickstart.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "quickstart.atryum" . }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ .Release.Name }}-configure
+      ports:
+        - port: 8080
+    - from:
+        - podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: {{ include "quickstart.gateway" . }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-gateway
+              app.kubernetes.io/managed-by: mcp-gateway-controller
+      ports:
+        - port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "quickstart.gateway" . }}-demo
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" . }}-demo
+    {{- include "quickstart.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "quickstart.demo" . }}
+  policyTypes: [Ingress]
+  ingress:
+    {{- if .Values.demo.route.enabled }}
+    - ports:
+        - port: 8000
+    {{- end }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "quickstart.atryum" . }}
+      ports:
+        - port: 8001
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "quickstart.gateway" . }}-listener
+  labels:
+    app.kubernetes.io/name: {{ include "quickstart.gateway" . }}-listener
+    {{- include "quickstart.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ include "quickstart.gateway" . }}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "quickstart.demo" . }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-gateway
+              app.kubernetes.io/managed-by: mcp-gateway-controller
+      ports:
+        - port: 8080
+{{- end }}

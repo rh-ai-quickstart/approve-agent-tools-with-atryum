@@ -2,6 +2,24 @@
 {{- define "quickstart.atryum" -}}{{ .Release.Name }}-atryum{{- end -}}
 {{- define "quickstart.postgres" -}}{{ .Release.Name }}-postgres{{- end -}}
 {{- define "quickstart.demo" -}}{{ .Release.Name }}-demos{{- end -}}
+{{- define "quickstart.gateway" -}}{{ .Release.Name }}-mcp{{- end -}}
+
+{{/* Gateway mode uses the verified demo client and its bundled Python environment. */}}
+{{- define "quickstart.demoImage" -}}
+{{- $digest := .Values.demo.image.digest -}}
+{{- if and .Values.mcpGateway.enabled (not $digest) (eq .Values.demo.image.repository "validmind/atryum-finance-demo") (eq .Values.demo.image.tag "latest") -}}
+{{- $digest = "sha256:13fa226e82619813f31ae952475d1792cb087745603bd2cded8aae7fad0de6d0" -}}
+{{- end -}}
+{{- if $digest -}}
+{{- printf "%s@%s" .Values.demo.image.repository $digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.demo.image.repository .Values.demo.image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "quickstart.gatewayHost" -}}
+{{- printf "%s-%s.%s.svc.cluster.local" (include "quickstart.gateway" .) .Values.mcpGateway.gatewayClassName .Release.Namespace -}}
+{{- end -}}
 
 {{/* Common labels */}}
 {{- define "quickstart.labels" -}}

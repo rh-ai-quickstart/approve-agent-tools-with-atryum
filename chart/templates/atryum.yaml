@@ -44,6 +44,11 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+    {{- if .Values.mcpGateway.enabled }}
+    - name: mcp
+      port: 8081
+      targetPort: mcp
+    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -67,6 +72,9 @@ spec:
       annotations:
         # Restart Atryum when its config changes.
         checksum/config: {{ printf "%s|%s" (include "quickstart.atryumPublicURL" .) (include "quickstart.postgresPassword" .) | sha256sum }}
+        {{- if .Values.mcpGateway.enabled }}
+        checksum/mcp-adapter: {{ printf "%s%s" (.Files.Get "files/gateway_backend.py") (.Files.Get "files/seed.json") | sha256sum }}
+        {{- end }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -105,6 +113,37 @@ spec:
               mountPath: /app/atryum.toml
               subPath: atryum.toml
               readOnly: true
+        {{- if .Values.mcpGateway.enabled }}
+        - name: mcp-adapter
+          image: {{ include "quickstart.demoImage" . | quote }}
+          imagePullPolicy: {{ .Values.demo.image.pullPolicy }}
+          command: ["/opt/venv/bin/python", "-m", "uvicorn", "gateway_backend:app", "--app-dir", "/mcp-adapter", "--host", "0.0.0.0", "--port", "8081"]
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          ports:
+            - name: mcp
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: mcp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: mcp-adapter
+              mountPath: /mcp-adapter
+              readOnly: true
+        {{- end }}
       volumes:
         - name: atryum-config
           secret:
@@ -112,7 +151,12 @@ spec:
             # 0440, not 0400: secret files are root-owned and OpenShift runs the
             # container as a random UID in the root group — group-read required.
             defaultMode: 0440
-{{- if .Values.atryum.route.enabled }}
+        {{- if .Values.mcpGateway.enabled }}
+        - name: mcp-adapter
+          configMap:
+            name: {{ include "quickstart.gateway" . }}-adapter
+        {{- end }}
+{{- if and .Values.atryum.route.enabled (not .Values.mcpGateway.enabled) }}
 ---
 apiVersion: route.openshift.io/v1
 kind: Route

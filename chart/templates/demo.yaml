@@ -36,6 +36,11 @@ spec:
         app.kubernetes.io/name: {{ include "quickstart.demo" . }}
         app.kubernetes.io/component: demo
         {{- include "quickstart.labels" . | nindent 8 }}
+      annotations:
+        checksum/model-secret: {{ include (print $.Template.BasePath "/llm-secret.yaml") . | sha256sum }}
+        {{- if .Values.mcpGateway.enabled }}
+        checksum/mcp-adapter: {{ .Files.Get "files/gateway_client.py" | sha256sum }}
+        {{- end }}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -43,18 +48,39 @@ spec:
           type: RuntimeDefault
       containers:
         - name: demos
-          image: "{{ .Values.demo.image.repository }}:{{ .Values.demo.image.tag }}"
+          image: {{ include "quickstart.demoImage" . | quote }}
           imagePullPolicy: {{ .Values.demo.image.pullPolicy }}
+          {{- if .Values.mcpGateway.enabled }}
+          command:
+            - bash
+            - -ec
+            - |
+              /opt/venv/bin/python /app/server.py &
+              /opt/venv/bin/python /mcp-adapter/gateway_client.py &
+              trap 'kill $(jobs -pr) 2>/dev/null || true' EXIT
+              trap 'exit 0' TERM INT
+              wait -n
+          volumeMounts:
+            - name: mcp-adapter
+              mountPath: /mcp-adapter
+              readOnly: true
+          {{- end }}
           ports:
             - name: dashboard
               containerPort: 8000
             - name: mcp
               containerPort: 8001
           env:
-            # The demo's agents call tools through Atryum's MCP proxy — that is
-            # the whole point of the quickstart.
+            {{- if .Values.mcpGateway.enabled }}
+            # Both demos use the gateway for MCP traffic.
+            - name: FINANCE_MCP_URL
+              value: {{ printf "http://%s:8080/mcp" (include "quickstart.gatewayHost" .) | quote }}
+            - name: GDPR_MCP_URL
+              value: {{ printf "http://%s:8080/mcp" (include "quickstart.gatewayHost" .) | quote }}
+            {{- else }}
             - name: ATRYUM_BASE
               value: "http://{{ include "quickstart.atryum" . }}:8080"
+            {{- end }}
             - name: FINANCE_RESET_URL
               value: "http://127.0.0.1:8001/mcp/finance/reset"
             - name: GDPR_RESET_URL
@@ -76,6 +102,12 @@ spec:
             capabilities:
               drop:
                 - ALL
+      {{- if .Values.mcpGateway.enabled }}
+      volumes:
+        - name: mcp-adapter
+          configMap:
+            name: {{ include "quickstart.gateway" . }}-adapter
+      {{- end }}
 {{- if .Values.demo.route.enabled }}
 ---
 apiVersion: route.openshift.io/v1
